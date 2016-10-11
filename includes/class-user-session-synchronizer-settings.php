@@ -71,11 +71,11 @@ class User_Session_Synchronizer_Settings {
 		//add menu in wordpress settings
 		
 		//$page = add_options_page( __( 'User Session Synchronizer', 'user-session-synchronizer' ) , __( 'User Session Synchronizer', 'user-session-synchronizer' ) , 'manage_options' , $this->parent->_token . '_settings' ,  array( $this, 'settings_page' ) );
-		//add_action( 'admin_print_styles-' . $page, array( $this, 'settings_assets' ) );
+		//add_action( 'admin_print_styles' . $page, array( $this, 'settings_assets' ) );
 		
 		//add menu in wordpress dashboard
 		
-		add_menu_page('User Session Sync', 'User Session Sync', 'manage_options', 'user-session-synchronizer', array($this, 'settings_page'));
+		add_menu_page('User Session Sync', 'User Session Sync', 'manage_options', 'user-session-synchronizer', array($this, 'settings_page'),'dashicons-shield');
 		add_submenu_page("user-session-synchronizer", "User Verify ", "User Verify", 'administrator', 'ussync_user_email_verification', array( $this->parent->emailVerification, "ussync_user_email_verification"));
 		add_submenu_page("user-session-synchronizer", "User Sessions", "User Sessions", 'administrator', 'ussync_session_control', array( $this->parent->sessionControl, "ussync_session_control") );
 		add_submenu_page("user-session-synchronizer", "Email Template", "Email Template", 'administrator', 'ussync_email_setting', array( $this->parent->emailVerification, "ussync_email_setting"));
@@ -119,8 +119,8 @@ class User_Session_Synchronizer_Settings {
 	 */
 	private function settings_fields () {
 
-		$settings['standard'] = array(
-			'title'					=> __( 'General Options', 'user-session-synchronizer' ),
+		$settings['keys'] = array(
+			'title'					=> __( 'Keys', 'user-session-synchronizer' ),
 			'description'			=> __( 'This plugin uses the user email address as a unique ID to synchronize the session between two wordpress installations.', 'user-session-synchronizer' ),
 			'fields'				=> array(
 				array(
@@ -134,7 +134,7 @@ class User_Session_Synchronizer_Settings {
 				array(
 					'id' 			=> 'domain_list_1',
 					'label'			=> __( 'List of domains 1' , 'user-session-synchronizer' ),
-					'description'	=> __( 'List of domains to synchronize together. Separate multiple domains with line breaks.', 'user-session-synchronizer' ),
+					'description'	=> __( 'List of allowed domains to synchronize together. Separate multiple domains with line breaks.', 'user-session-synchronizer' ),
 					'type'			=> 'textarea',
 					'default'		=> '',
 					'placeholder'	=> __( $_SERVER['HTTP_HOST'], 'user-session-synchronizer' )
@@ -198,7 +198,7 @@ class User_Session_Synchronizer_Settings {
 		
 		/*
 		$settings['extra'] = array(
-			'title'					=> __( 'Extra', 'user-session-synchronizer' ),
+			'title'					=> __( 'Iframes', 'user-session-synchronizer' ),
 			'description'			=> __( 'These are some extra input fields that maybe aren\'t as common as the others.', 'user-session-synchronizer' ),
 			'fields'				=> array(
 				array(
@@ -246,14 +246,19 @@ class User_Session_Synchronizer_Settings {
 	 * @return void
 	 */
 	public function register_settings () {
+		
 		if ( is_array( $this->settings ) ) {
 
 			// Check posted/selected tab
 			$current_section = '';
 			if ( isset( $_POST['tab'] ) && $_POST['tab'] ) {
+				
 				$current_section = $_POST['tab'];
-			} else {
+			} 
+			else {
+				
 				if ( isset( $_GET['tab'] ) && $_GET['tab'] ) {
+					
 					$current_section = $_GET['tab'];
 				}
 			}
@@ -270,6 +275,7 @@ class User_Session_Synchronizer_Settings {
 					// Validation callback for field
 					$validation = '';
 					if ( isset( $field['callback'] ) ) {
+						
 						$validation = $field['callback'];
 					}
 
@@ -287,6 +293,7 @@ class User_Session_Synchronizer_Settings {
 	}
 
 	public function settings_section ( $section ) {
+		
 		$html = '<p> ' . $this->settings[ $section['id'] ]['description'] . '</p>' . "\n";
 		echo $html;
 	}

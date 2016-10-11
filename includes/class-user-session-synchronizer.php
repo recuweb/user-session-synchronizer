@@ -83,8 +83,11 @@ class User_Session_Synchronizer {
 	 * @return  void
 	 */
 	 
+	public $key_num;
+	public $secret_key;
+	 
 	public function __construct ( $file = '', $version = '1.0.0' ) {
-		
+
 		$this->_version = $version;
 		$this->_token = 'user-session-synchronizer';
 
@@ -96,38 +99,38 @@ class User_Session_Synchronizer {
 
 		$this->script_suffix = defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? '' : '.min';
 		
-		// set user information
-		
-		$this->user_id = get_current_user_id();
-		
-		if( is_admin() ) {
-			
-			$this->user_verified = 'true';
-		}
-		else{
-			
-			$this->user_verified = get_user_meta( $this->user_id, "ussync_email_verified", TRUE);
-		}
-		
 		// set user ip
 		
-		if (!empty($_SERVER['HTTP_CLIENT_IP'])) {
+		if(isset($_SERVER['HTTP_CLIENT_IP'])&&!empty($_SERVER['HTTP_CLIENT_IP'])) {
 			
 			$this->user_ip = $_SERVER['HTTP_CLIENT_IP'];
 		} 
-		elseif (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+		elseif(isset($_SERVER['HTTP_X_FORWARDED_FOR'])&&!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
 			
 			$this->user_ip = $_SERVER['HTTP_X_FORWARDED_FOR'];
 		} 
-		else {
+		else{
 			
 			$this->user_ip = $_SERVER['REMOTE_ADDR'];
 		}
 		
 		// set user agent
 		
-		$this->user_agent = $_SERVER ['HTTP_USER_AGENT'];
+		$this->user_agent = $_SERVER['HTTP_USER_AGENT'];
 		
+		// set secret key number
+		
+		$this -> key_num=1;
+		
+		if(isset($_GET['ussync-key'])){
+			
+			$this -> key_num=(int)trim($_GET['ussync-key']);
+		}
+		
+		//get secret_key
+		
+		$this -> secret_key = get_option('ussync_secret_key_'.$this -> key_num);
+
 		// register plugin activation hook
 		
 		register_activation_hook( $this->file, array( $this, 'install' ) );
@@ -156,10 +159,6 @@ class User_Session_Synchronizer {
 		// Handle profile updates
 		add_action( 'user_profile_update_errors', array( $this, 'ussync_prevent_email_change'), 10, 3 );
 		add_action( 'admin_init', array( $this, 'ussync_user_profile_fields_disable'));
-		
-		// Handle footers
-		add_action( 'wp_footer', array( $this, 'ussync_add_footer' ));
-		add_action( 'admin_footer_text', array( $this, 'ussync_add_footer' ));
 
 	} // End __construct ()
 
@@ -177,11 +176,13 @@ class User_Session_Synchronizer {
 	 
 		// apply only to user profile or user edit pages
 		if ($pagenow!=='profile.php' && $pagenow!=='user-edit.php') {
+			
 			return;
 		}
 	 
 		// do not change anything for the administrator
 		if (current_user_can('administrator')) {
+			
 			return;
 		}
 	 
@@ -211,6 +212,29 @@ class User_Session_Synchronizer {
 	
 	public function ussync_synchronize_session(){
 		
+		// set user information
+		
+		$this->user_id = get_current_user_id();
+		
+		// check user verified
+		
+		if( current_user_can('administrator') ) {
+
+			$this->user_verified = 'true';
+		}
+		else{
+			
+			$this->user_verified = get_user_meta( $this->user_id, "ussync_email_verified", TRUE);
+		}
+		
+		// add cors header
+		if(is_user_logged_in()){
+			
+			add_action( 'send_headers', array($this, 'ussync_add_cors_header') );
+		}		
+		
+		// synchronize sessions
+
 		if(isset($_GET['action'])&&$_GET['action']=='logout'){
 			
 			$this-> ussync_call_domains(true);
@@ -225,170 +249,230 @@ class User_Session_Synchronizer {
 			wp_safe_redirect( trim( $_GET['redirect_to'] ) );
 			exit;
 		}
-		elseif(isset($_GET['ussync-token'])&&isset($_GET['ussync-id'])){
-			
-			// set secret key number
-			
-			$key_num=1;
-			
-			if(isset($_GET['ussync-key'])){
-				
-				$key_num=(int)trim($_GET['ussync-key']);
-			}
+		elseif(isset($_GET['ussync-token'])&&isset($_GET['ussync-id'])&&isset($_GET['ussync-ref'])){
 
 			//decrypted user_name
 			
 			$user_name = trim($_GET['ussync-id']);
-			$user_name = $this->ussync_decrypt_uri($user_name, get_option('ussync_secret_key_'.$key_num) );
+			$user_name = $this->ussync_decrypt_uri($user_name);
+
+			//decrypted user_name
+			
+			$user_ref = ($_GET['ussync-ref']);
+			
+			$user_ref = $this->ussync_decrypt_uri($user_ref);
 			
 			//decrypted user_email
 			
 			$user_email = trim($_GET['ussync-token']);
-			$user_email = $this->ussync_decrypt_uri($user_email, get_option('ussync_secret_key_'.$key_num) );
+			$user_email = $this->ussync_decrypt_uri($user_email);
 			
 			//set user ID
 			
 			$user_email = sanitize_email($user_email);
 			
-			if(isset($_GET['ussync-status']) && $_GET['ussync-status']=='loggingout'){
+			//get domain list
+			
+			$domain_list = get_option('ussync_domain_list_'.$this -> key_num);
+			$domain_list = explode(PHP_EOL,$domain_list);
+			
+			//get valid domains
+
+			$domains=[];
+			
+			foreach($domain_list as $domain){
 				
-				// Logout user
+				$domain = trim($domain);
+				$domain = rtrim($domain,'/');
+				$domain = preg_replace("(^https?://)", "", $domain);
 				
-				if( $user = get_user_by('email', $user_email ) ){
+				$domains[$domain]='';
+			}
+			
+			//check referer
+			
+			$valid_referer=false;
+			
+			if(isset($domains[$user_ref])){
+				
+				$valid_referer=true;
+			}			
+			
+			if($valid_referer===true){
+				
+				if(isset($_GET['ussync-status']) && $_GET['ussync-status']=='loggingout'){
 					
-					// get all sessions for user with ID
-					$sessions = WP_Session_Tokens::get_instance($user->ID);
+					// Logout user
+					
+					if( $user = get_user_by('email', $user_email ) ){
+						
+						// get all sessions for user with ID
+						$sessions = WP_Session_Tokens::get_instance($user->ID);
 
-					// we have got the sessions, destroy them all!
-					$sessions->destroy_all();	
+						// we have got the sessions, destroy them all!
+						$sessions->destroy_all();	
 
-					echo 'User logged out...';
-					exit;					
-				} 
+						echo 'User logged out...';
+						exit;					
+					} 
+					else{
+						
+						$this->ussync_decrypt_uri($_GET['ussync-token']);
+						
+						echo 'Error logging out...';
+						exit;					
+					}
+				}			
 				else{
 					
-					var_dump($this->ussync_decrypt_uri($_GET['ussync-token'], get_option('ussync_secret_key_'.$key_num) ));exit;
-					
-					echo 'Error logging out...';
-					exit;					
-				}
-			}			
-			else{
-				
-				$current_user = wp_get_current_user();
+					$current_user = wp_get_current_user();
 
-				if(!is_user_logged_in() || $current_user->user_email != $user_email){				
-					
-					// check if the user exists
-					
-					if( !email_exists( $user_email ) ){
-					
-						$ussync_no_user = get_option('ussync_no_user_'.$key_num);
-					
-						if($ussync_no_user=='register_suscriber'){
-							
-							// register new suscriber
-							
-							$user_data = array(
-								'user_login'  =>  $user_name,
-								'user_email'   =>  $user_email,
-							);
-													
-							if( get_userdatabylogin($user_name) ){
+					if(!is_user_logged_in() || $current_user->user_email != $user_email){				
+						
+						// check if the user exists
+						
+						if( !email_exists( $user_email ) ){
+						
+							$ussync_no_user = get_option('ussync_no_user_'.$this -> key_num);
+						
+							if($ussync_no_user=='register_suscriber'){
 								
-								echo 'User name already exists!';
-								exit;							
-							}
-							elseif( $user_id = wp_insert_user( $user_data ) ) {
+								// register new suscriber
 								
-								// update email status
-								
-								add_user_meta( $user_id, 'ussync_email_verified', 'true');
+								$user_data = array(
+									'user_login'  =>  $user_name,
+									'user_email'   =>  $user_email,
+								);
+														
+								if( get_userdatabylogin($user_name) ){
+									
+									echo 'User name already exists!';
+									exit;							
+								}
+								elseif( $user_id = wp_insert_user( $user_data ) ) {
+									
+									// update email status
+									
+									add_user_meta( $user_id, 'ussync_email_verified', 'true');
+								}
+								else{
+									
+									echo 'Error creating a new user!';
+									exit;								
+								}
 							}
 							else{
 								
-								echo 'Error creating a new user!';
-								exit;								
+								echo 'This user doesn\'t exist...';
+								exit;							
+							}
+						}
+						
+						if($current_user->user_email != $user_email){
+							
+							//destroy current user session
+
+							$sessions = WP_Session_Tokens::get_instance($current_user->ID);
+							$sessions->destroy_all();	
+						}					
+						
+						if($user=get_user_by('email',$user_email)){
+							
+							//do the authentication
+							
+							clean_user_cache($user->ID);
+							
+							wp_clear_auth_cookie();
+							wp_set_current_user( $user->ID );
+							wp_set_auth_cookie( $user->ID , true, false);
+
+							update_user_caches($user);
+							
+							if(is_user_logged_in()){
+								
+								//redirect after authentication
+								
+								wp_safe_redirect( rtrim( get_site_url(), '/' ) . '/?ussync-status=loggedin');
 							}
 						}
 						else{
 							
-							echo 'This user doesn\'t exist...';
-							exit;							
-						}
-					}
-					
-					if($current_user->user_email != $user_email){
-						
-						//destroy current user session
-
-						$sessions = WP_Session_Tokens::get_instance($current_user->ID);
-						$sessions->destroy_all();	
-					}					
-					
-					if($user=get_user_by('email',$user_email)){
-						
-						//do the authentication
-						
-						clean_user_cache($user->ID);
-						
-						wp_clear_auth_cookie();
-						wp_set_current_user( $user->ID );
-						wp_set_auth_cookie( $user->ID , true, false);
-
-						update_user_caches($user);
-						
-						if(is_user_logged_in()){
-							
-							//redirect after authentication
-							
-							wp_safe_redirect( rtrim( get_site_url(), '/' ) . '/?ussync-status=loggedin');
-						}
+							echo 'Error logging in...';
+							exit;						
+						}					
 					}
 					else{
 						
-						echo 'Error logging in...';
-						exit;						
-					}					
-				}
-				else{
-					
-					echo 'User already logged in...';
-					exit;
+						echo 'User already logged in...';
+						exit;
+					}
 				}
 			}
+			else{
+
+				echo 'Host not allowed to synchronize...';
+				exit;				
+			}
+		}
+		elseif(is_user_logged_in() && !isset($_GET['ussync-token']) && $this->user_verified === 'true'){
+			
+			//add footers
+			
+			if( is_admin() ) {
+				
+				add_action( 'admin_footer_text', array( $this, 'ussync_call_domains' ));
+			}
+			else{
+				
+				add_action( 'wp_footer', array( $this, 'ussync_call_domains' ));
+			}			
 		}
 	}
 	
-    public function ussync_add_footer(){
+	function ussync_add_cors_header() {
 		
-		if(is_user_logged_in() && !isset($_GET['ussync-token']) && $this->user_verified === 'true'){
+		// Allow from valid origin
+		/*
+		//if (isset($_SERVER['HTTP_ORIGIN'])) {
 			
-			$this-> ussync_call_domains();
-		}
+			header("Access-Control-Allow-Origin: {$_SERVER['HTTP_ORIGIN']}");
+			header('Access-Control-Allow-Credentials: true');
+			header('Access-Control-Max-Age: 86400');    // cache for 1 day
+		//}
 
-        return true;
-    }
+		// Access-Control headers are received during OPTIONS requests
+
+		if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
+
+			if (isset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD']))
+				header("Access-Control-Allow-Methods: GET, POST, OPTIONS");         
+
+			if (isset($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']))
+				header("Access-Control-Allow-Headers:        {$_SERVER['HTTP_ACCESS_CONTROL_REQUEST_HEADERS']}");
+
+			exit(0);
+		}
+		*/
+	}
 	
 	public function ussync_call_domains($loggingout=false){
 		
-		//get key number
-		
-		$key_num = 1; 
-		
-		//get user ID
-		
 		if($user = wp_get_current_user()){
+
+			//get list of domains
+			
+			$domains = get_option('ussync_domain_list_'.$this -> key_num);
+			$domains = explode(PHP_EOL,$domains);
 			
 			//get encrypted user name
 			
 			$user_name = $user->user_login;
-			$user_name = $this->ussync_encrypt_uri($user_name, get_option('ussync_secret_key_'.$key_num));
+			$user_name = $this->ussync_encrypt_uri($user_name);
 			
 			//get encrypted user email
 			
 			$user_email = $user->user_email;
-			$user_email = $this->ussync_encrypt_uri($user_email, get_option('ussync_secret_key_'.$key_num));
+			$user_email = $this->ussync_encrypt_uri($user_email);
 			
 			//get current domain
 			
@@ -396,10 +480,11 @@ class User_Session_Synchronizer {
 			$current_domain = rtrim($current_domain,'/');
 			$current_domain = preg_replace("(^https?://)", "", $current_domain);
 			
-			//get list of domains
+			//get encrypted user referer
 			
-			$domains = get_option('ussync_domain_list_'.$key_num);
-			$domains = explode(PHP_EOL,$domains);
+			//$user_ref = $_SERVER['HTTP_HOST'];
+			$user_ref = $current_domain;
+			$user_ref = $this->ussync_encrypt_uri($user_ref);
 			
 			if(!empty($domains)){
 				
@@ -415,20 +500,23 @@ class User_Session_Synchronizer {
 							
 							$opts = array(
 							  'http'=>array(
-								'method'=>"GET",
-								'header'=>"User-Agent: " . $this->user_agent . "\r\n"
+								'method' => "GET",
+								'header' => "User-Agent: " . $this -> user_agent . "\r\n" . 
+											"X-Forwarded-For: " . $this->user_ip . "\r\n"
 							  )
 							);
 
 							$context = stream_context_create($opts);							
 							
-							file_get_contents('http://' . $domain . '/?ussync-token='.$user_email.'&ussync-key='.$key_num.'&ussync-id='.$user_name.'&ussync-status=loggingout'.'&_' . time(), false, $context);
+							$response = file_get_contents('http://' . $domain . '/?ussync-token='.$user_email.'&ussync-key='.$this -> key_num.'&ussync-id='.$user_name.'&ussync-ref='.$user_ref.'&ussync-status=loggingout'.'&_' . time(), false, $context);
+							 
+							//var_dump($response);exit;
 						}
 						else{
 							
 							//output html
 						
-							echo '<img class="ussync" src="http://' . $domain . '/?ussync-token='.$user_email.'&ussync-key='.$key_num.'&ussync-id='.$user_name.'&_' . time() . '" style="display:none;width:0;height:0;">';								
+							echo '<img class="ussync" src="http://' . $domain . '/?ussync-token='.$user_email.'&ussync-key='.$this -> key_num.'&ussync-id='.$user_name.'&ussync-ref='.$user_ref.'&_' . time() . '" style="display:none;width:0;height:0;">';								
 						}
 					}
 				}				
@@ -436,17 +524,16 @@ class User_Session_Synchronizer {
 		}
 	}
 	
-
-	private function ussync_encrypt_str($string, $secret_key){
+	private function ussync_encrypt_str($string){
 		
 		$output = false;
 
 		$encrypt_method = "AES-256-CBC";
 		
-		$secret_key = md5($secret_key);
+		$secret_key = md5( $this -> secret_key );
 		
-		$secret_iv = md5($this->user_agent . $this->user_ip);
-
+		$secret_iv = md5( $this->user_agent . $this->user_ip );
+		
 		// hash
 		$key = hash('sha256', $secret_key);
 		
@@ -459,37 +546,37 @@ class User_Session_Synchronizer {
 		return $output;
 	}
 	
-	private function ussync_decrypt_str($string, $secret_key){
+	private function ussync_decrypt_str($string){
 		
 		$output = false;
 
 		$encrypt_method = "AES-256-CBC";
 		
-		$secret_key = md5($secret_key);
+		$secret_key = md5( $this->secret_key );
 		
-		$secret_iv = md5($this->user_agent . $this->user_ip);
+		$secret_iv = md5( $this->user_agent . $this->user_ip );
 
 		// hash
-		$key = hash('sha256', $secret_key);
+		$key = hash( 'sha256', $secret_key);
 		
 		// iv - encrypt method AES-256-CBC expects 16 bytes - else you will get a warning
-		$iv = substr(hash('sha256', $secret_iv), 0, 16);
+		$iv = substr( hash( 'sha256', $secret_iv ), 0, 16);
 
 		$output = openssl_decrypt($this->ussync_base64_urldecode($string), $encrypt_method, $key, 0, $iv);
 
 		return $output;
 	}
 	
-	private function ussync_encrypt_uri($uri,$secret_key,$len=250,$separator='/'){
+	private function ussync_encrypt_uri($uri,$len=250,$separator='/'){
 		
-		$uri = wordwrap($this->ussync_encrypt_str($uri,$secret_key),$len,$separator,true);
+		$uri = wordwrap($this->ussync_encrypt_str($uri),$len,$separator,true);
 		
 		return $uri;
 	}
 	
-	private function ussync_decrypt_uri($uri,$secret_key,$separator='/'){
+	private function ussync_decrypt_uri($uri,$separator='/'){
 		
-		$uri = $this->ussync_decrypt_str(str_replace($separator,'',$uri),$secret_key);
+		$uri = $this->ussync_decrypt_str(str_replace($separator,'',$uri));
 		
 		return $uri;
 	}
